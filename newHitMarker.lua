@@ -1,9 +1,10 @@
--- FULL WORKING SCRIPT
+-- FULL WORKING SCRIPT (with debug-mode options: Press / Hold / Instant + Unbind)
 -- // SERVICES
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local TweenService = game:GetService("TweenService")
 local UserInputService = game:GetService("UserInputService")
+local GuiService = game:GetService("GuiService")
 local player = Players.LocalPlayer
 local mouse = player:GetMouse()
 local camera = workspace.CurrentCamera
@@ -14,7 +15,8 @@ local settings = {
 	ShowFOV = true,
 	RainbowInner = true,
 	SpinHitmarker = true,
-	DebugBind = Enum.KeyCode.B
+	DebugBind = Enum.KeyCode.B,
+	DebugMode = "Press" -- "Press", "Hold", "Instant", "Off"
 }
 
 -- // HITMARKER DEFAULTS (can be changed in menu)
@@ -27,6 +29,14 @@ local hueOffset = 0
 local lastHP = {}
 local menuOpen = true
 local menu
+
+-- Hold-mode state
+local holdState = {
+	holding = false,
+	targetHumanoid = nil,
+	initialHP = 0,
+	conn = nil
+}
 
 -- // SCREEN GUI
 local screenGui = Instance.new("ScreenGui")
@@ -104,10 +114,10 @@ local function setupGUI()
 		hitSound.Parent = hitmarker
 	end
 
-	-- Build menu
+	-- // MENU (bigger to fit new buttons)
 	menu = Instance.new("Frame")
-	menu.Size = UDim2.new(0,380,0,320)
-	menu.Position = UDim2.new(0.5,-190,0.5,-160)
+	menu.Size = UDim2.new(0,420,0,380)
+	menu.Position = UDim2.new(0.5,-210,0.5,-190)
 	menu.BackgroundColor3 = Color3.fromRGB(40,40,40)
 	menu.BorderSizePixel = 0
 	menu.Visible = menuOpen
@@ -155,7 +165,7 @@ local function setupGUI()
 	-- helper to create buttons
 	local function createButton(text, posY, parent)
 		local btn = Instance.new("TextButton")
-		btn.Size = UDim2.new(0,160,0,30)
+		btn.Size = UDim2.new(0,180,0,30)
 		btn.Position = UDim2.new(0,12,0,posY)
 		btn.Text = text
 		btn.Font = Enum.Font.Gotham
@@ -183,7 +193,7 @@ local function setupGUI()
 
 	-- Hitmarker texture input
 	local labelImg = Instance.new("TextLabel", menu)
-	labelImg.Size = UDim2.new(0,120,0,20)
+	labelImg.Size = UDim2.new(0,140,0,20)
 	labelImg.Position = UDim2.new(0,12,0,130)
 	labelImg.BackgroundTransparency = 1
 	labelImg.Text = "Hitmarker Image ID"
@@ -192,7 +202,7 @@ local function setupGUI()
 	labelImg.TextSize = 12
 
 	local imageBox = Instance.new("TextBox", menu)
-	imageBox.Size = UDim2.new(0,200,0,30)
+	imageBox.Size = UDim2.new(0,240,0,30)
 	imageBox.Position = UDim2.new(0,12,0,150)
 	imageBox.ClearTextOnFocus = false
 	imageBox.Text = hitmarkerID
@@ -200,8 +210,8 @@ local function setupGUI()
 	imageBox.Font = Enum.Font.Gotham
 	imageBox.TextSize = 14
 
-	local applyImg = createButton("Apply Image", 150, menu)
-	applyImg.Position = UDim2.new(0,220,0,150)
+	local applyImg = createButton("Apply Image", 150)
+	applyImg.Position = UDim2.new(0,260,0,150)
 	applyImg.MouseButton1Click:Connect(function()
 		if imageBox.Text ~= "" then
 			hitmarkerID = imageBox.Text
@@ -211,7 +221,7 @@ local function setupGUI()
 
 	-- Hitmarker sound input
 	local labelSnd = Instance.new("TextLabel", menu)
-	labelSnd.Size = UDim2.new(0,120,0,20)
+	labelSnd.Size = UDim2.new(0,140,0,20)
 	labelSnd.Position = UDim2.new(0,12,0,195)
 	labelSnd.BackgroundTransparency = 1
 	labelSnd.Text = "Hitmarker Sound ID"
@@ -220,7 +230,7 @@ local function setupGUI()
 	labelSnd.TextSize = 12
 
 	local soundBox = Instance.new("TextBox", menu)
-	soundBox.Size = UDim2.new(0,200,0,30)
+	soundBox.Size = UDim2.new(0,240,0,30)
 	soundBox.Position = UDim2.new(0,12,0,215)
 	soundBox.ClearTextOnFocus = false
 	soundBox.Text = hitSoundID
@@ -228,8 +238,8 @@ local function setupGUI()
 	soundBox.Font = Enum.Font.Gotham
 	soundBox.TextSize = 14
 
-	local applySnd = createButton("Apply Sound", 215, menu)
-	applySnd.Position = UDim2.new(0,220,0,215)
+	local applySnd = createButton("Apply Sound", 215)
+	applySnd.Position = UDim2.new(0,260,0,215)
 	applySnd.MouseButton1Click:Connect(function()
 		if soundBox.Text ~= "" then
 			hitSoundID = soundBox.Text
@@ -237,8 +247,20 @@ local function setupGUI()
 		end
 	end)
 
+	-- Debug mode cycle button
+	local dbgBtn = createButton("Debug Mode: "..settings.DebugMode, 260)
+	dbgBtn.MouseButton1Click:Connect(function()
+		local order = {"Press","Hold","Instant","Off"}
+		local idx = 1
+		for i,v in ipairs(order) do if v == settings.DebugMode then idx = i break end end
+		idx = idx + 1
+		if idx > #order then idx = 1 end
+		settings.DebugMode = order[idx]
+		dbgBtn.Text = "Debug Mode: "..settings.DebugMode
+	end)
+
 	-- Debug bind setter
-	local btnBind = createButton("Set Debug Bind (B)", 260, menu)
+	local btnBind = createButton("Set Debug Bind: "..tostring(settings.DebugBind):gsub("Enum.KeyCode.",""), 300)
 	btnBind.MouseButton1Click:Connect(function()
 		btnBind.Text = "Press a key..."
 		local conn
@@ -246,10 +268,17 @@ local function setupGUI()
 			if processed then return end
 			if input.UserInputType == Enum.UserInputType.Keyboard then
 				settings.DebugBind = input.KeyCode
-				btnBind.Text = "Debug Bind: "..tostring(input.KeyCode):gsub("Enum.KeyCode.","")
+				btnBind.Text = "Set Debug Bind: "..tostring(input.KeyCode):gsub("Enum.KeyCode.","")
 				conn:Disconnect()
 			end
 		end)
+	end)
+
+	-- Unbind button
+	local unbindBtn = createButton("Unbind Debug", 340)
+	unbindBtn.MouseButton1Click:Connect(function()
+		settings.DebugBind = Enum.KeyCode.Unknown
+		btnBind.Text = "Set Debug Bind: Unknown"
 	end)
 end
 
@@ -272,7 +301,7 @@ local function updateInnerGradient(dt)
 	end
 	if innerGradient then
 		innerGradient.Color = ColorSequence.new(keypoints)
-		innerGradient.Rotation = (innerGradient.Rotation + 40*dt) % 360
+		innerGradient.Rotation = (innerGradient.Rotation + 36 * dt) % 360
 	end
 end
 
@@ -298,12 +327,12 @@ local function getClosestPlayerToCursor()
 	return closestPlayer
 end
 
--- // HITMARKER TRIGGER (used by debug, click-check and automatic immediate detection)
+-- // HITMARKER VISUAL SPAWN (spin + fade)
 local function spawnHitmarkerVisual()
 	if not hitmarker then return end
 	hitmarker.Visible = true
 	hitmarker.ImageTransparency = 0
-	-- play sound
+	-- play sound safely
 	if hitSound and hitSound.SoundId ~= "" then
 		pcall(function() hitSound:Play() end)
 	end
@@ -319,7 +348,7 @@ local function spawnHitmarkerVisual()
 	end)
 end
 
--- Called when we want to watch a humanoid for 2 seconds (click or bind)
+-- Called when we want to watch a humanoid for 2 seconds (click or press)
 local function watchHumanoidForHit(humanoid)
 	coroutine.wrap(function()
 		if not humanoid then return end
@@ -336,28 +365,66 @@ local function watchHumanoidForHit(humanoid)
 	end)()
 end
 
--- // INPUT: Debug bind (key) & classic click
+-- // INPUT HANDLING: Debug bind modes + classic click
 UserInputService.InputBegan:Connect(function(input, processed)
 	if processed then return end
 
-	-- Debug bind (key)
-	if input.KeyCode == settings.DebugBind then
-		local target = getClosestPlayerToCursor()
-		if target and target.Character and target.Character:FindFirstChild("Humanoid") then
-			watchHumanoidForHit(target.Character.Humanoid)
-		end
-	end
-
-	-- Left click (classic): same behaviour
+	-- Left click classic (always does the 2s watch)
 	if input.UserInputType == Enum.UserInputType.MouseButton1 then
 		local target = getClosestPlayerToCursor()
 		if target and target.Character and target.Character:FindFirstChild("Humanoid") then
 			watchHumanoidForHit(target.Character.Humanoid)
 		end
 	end
+
+	-- Debug bind handling
+	if input.KeyCode == settings.DebugBind then
+		if settings.DebugMode == "Off" then return end
+		local target = getClosestPlayerToCursor()
+		if not target or not target.Character or not target.Character:FindFirstChild("Humanoid") then return end
+
+		if settings.DebugMode == "Press" then
+			-- the 2s watch (same as left-click)
+			watchHumanoidForHit(target.Character.Humanoid)
+
+		elseif settings.DebugMode == "Instant" then
+			-- immediate spawn visual (no HP check)
+			spawnHitmarkerVisual()
+
+		elseif settings.DebugMode == "Hold" then
+			-- start hold-mode watch (continues until key release)
+			holdState.holding = true
+			holdState.targetHumanoid = target.Character.Humanoid
+			holdState.initialHP = holdState.targetHumanoid.Health
+			-- spawn a coroutine that polls until release or HP drop
+			holdState.conn = coroutine.wrap(function()
+				while holdState.holding do
+					if not holdState.targetHumanoid then break end
+					if holdState.targetHumanoid.Health < holdState.initialHP then
+						spawnHitmarkerVisual()
+						holdState.holding = false
+						return
+					end
+					task.wait(0.05)
+				end
+			end)
+			holdState.conn()
+		end
+	end
 end)
 
--- // AUTOMATIC immediate hit detection (HP drop)
+-- InputEnded for Hold mode
+UserInputService.InputEnded:Connect(function(input, processed)
+	if processed then return end
+	if input.KeyCode == settings.DebugBind and settings.DebugMode == "Hold" then
+		holdState.holding = false
+		holdState.targetHumanoid = nil
+		holdState.initialHP = 0
+		holdState.conn = nil
+	end
+end)
+
+-- // AUTOMATIC immediate HP-drop detection (instant hitmarker)
 RunService.RenderStepped:Connect(function(dt)
 	-- update outer circle position and visibility
 	local mousePos = Vector2.new(mouse.X, mouse.Y)
